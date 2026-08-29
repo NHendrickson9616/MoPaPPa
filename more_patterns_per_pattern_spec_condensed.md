@@ -7,7 +7,9 @@
 - **DECIDED**: The custom IR must support expressions, items, modules, partial code, and code with unresolved context.
 - **DECIDED**: The controller should reconstruct syntax that does not require a learned decision.
 - **DECIDED**: Internal symbol identity should not depend on identifier spelling.
-- **LIKELY**: An English encoder will condition a Rust structural decoder.
+- **DECIDED**: The structural decoder receives the current `Need`, controller state, and partial program.
+- **LIKELY**: The first English-conditioned baseline will use the prompt as a decoder-only prefix.
+- **OPEN**: Compare that baseline with a separate pretrained English encoder.
 - **LIKELY**: A separate naming pass will assign readable identifiers.
 
 The custom IR must preserve enough source-level structure to produce idiomatic Rust. Reversibility does not require identical formatting or punctuation.
@@ -264,7 +266,11 @@ The model does not serialize a complete tree directly. It works with a determini
 
 ## 10.1 Structural decoder
 
-The structural decoder produces hidden states and action scores. It does not contain an explicit Rust grammar.
+The structural decoder receives the English condition, previous structural actions, current `Need`, controller state, and partial-program context. It produces hidden states and action scores.
+
+Its attention and feed-forward blocks can use standard Transformer implementations. Its structural inputs, output heads, pointer mechanism, and controller interface are custom.
+
+The decoder does not contain an explicit Rust grammar.
 
 ## 10.2 Controller
 
@@ -277,28 +283,30 @@ The controller knows:
 - valid next actions
 - node completion rules
 
-The controller masks invalid actions, updates the custom IR, maintains traversal state, and returns state to the decoder.
+The controller masks invalid actions, updates the custom IR, and maintains traversal state. At each step, it returns the next `Need`, state, and partial-program context to the decoder.
 
 ## 10.3 Feedback loop
 
 ```text
-English intent ──► structural decoder
-                         │
-                         ▼
-                    action scores
-                         │
-                         ▼
-                    validity mask
-                         │
-                         ▼
-                    chosen action
-                         │
-                         ▼
-                       controller
-                         │
-              update custom IR and state
-                         │
-                         └──────────────► structural decoder
+English condition ──────────────────────────────┐
+                                                ▼
+Previous actions + current Need + state ──► structural decoder
+                                                │
+                                                ▼
+                                           action scores
+                                                │
+                                                ▼
+                                         controller mask
+                                                │
+                                                ▼
+                                          chosen action
+                                                │
+                                                ▼
+                                            controller
+                                                │
+                           update custom IR, Need, and state
+                                                │
+                                                └────────────► structural decoder
 ```
 
 ---
@@ -351,22 +359,28 @@ The structural decoder must know what to predict and what the program already co
 Its inputs are approximately:
 
 ```text
-English intent
+English condition
 +
-custom IR built so far
+previous structural actions or custom IR built so far
 +
-current structural state
+current Need
++
+current controller state
 ```
+
+The English condition can be prompt-prefix embeddings or hidden states from a separate encoder. The changing `Need` and controller state always enter the structural decoder, not the optional English encoder.
 
 ## 13.1 Compositional state embeddings
 
 A state can contain:
 
 ```text
-parent   = FUNCTION
-field    = RETURN_TYPE
-expected = TYPE
+parent = FUNCTION
+field  = RETURN_TYPE
+Need   = TYPE
 ```
+
+The `Need` selects the required action category. The remaining state identifies the location and relevant controller context.
 
 The model can combine learned embeddings:
 
@@ -496,30 +510,51 @@ Internal binding names can use this late pass. External paths, APIs, fields, met
 
 ---
 
-# 17. English-to-Rust Model Interface
+# 17. English Conditioning Interface
 
-A likely architecture uses an English encoder and a Rust structural decoder:
+A separate English encoder is optional. The required property is that every structural step can use the English request.
+
+## 17.1 Preferred first baseline
+
+- **LIKELY**: Start with a decoder-only structural model.
 
 ```text
-English tokens
-      ↓
-English encoder
-      ↓
-semantic context
-      ↓
-structural decoder
+English prompt embeddings
++
+previous structural action embeddings
++
+current Need and controller-state embeddings
+                 ↓
+       decoder-only Transformer
+                 ↓
+         Need-specific head
 ```
 
-Their vocabularies do not need to match. Paired training can align their hidden representations.
+English tokens and structural actions can use separate embedding tables with the same hidden width. The controller supplies the changing `Need`, state, masks, and partial-program context.
 
-Possible neural interfaces include:
+The output remains custom even when the Transformer blocks are standard. Fixed action categories use constrained heads, symbols use a dynamic pointer head, and lexical fields use specialized mechanisms.
 
-- cross-attention to encoder states
-- a projected latent prefix
-- fixed-size bottleneck vectors
+## 17.2 Encoder-decoder alternative
 
-- **LIKELY**: Joint training with cross-attention is simpler than adding a separate projector without an experimental reason.
-- **OPEN**: Choose the exact interface and co-training strategy.
+A pretrained English encoder can process the prompt once:
+
+```text
+English tokens → English encoder → contextual prompt states
+                                           ↓ cross-attention
+                                  structural decoder
+```
+
+The encoder does not receive controller feedback. The custom decoder receives the state, `Need`, and partial program, then cross-attends to the fixed prompt states.
+
+A separate encoder provides bidirectional prompt representations, independent model sizes, and a clean boundary between text and structure. It does not already understand the custom IR. Paired training must align prompt states with structural actions.
+
+A learned projection can connect different encoder and decoder widths.
+
+## 17.3 Decision
+
+- **DECIDED**: Do not require a separate encoder in the core architecture.
+- **LIKELY**: Use decoder-only conditioning for the first English-conditioned prototype.
+- **OPEN**: Compare it with a pretrained encoder and custom cross-attentive decoder at similar compute.
 
 ---
 
@@ -618,7 +653,7 @@ The target remains parser-derived. Only the language-side supervision is synthet
 
 ## 21.4 Joint fine-tuning
 
-Train the English encoder, structural decoder, state embeddings, symbol pointer, and possibly the naming model.
+Train the structural decoder, text and action embeddings, state embeddings, symbol pointer, and possibly the naming model. If experiments add a separate encoder, first train its projection or cross-attention interface, then evaluate joint fine-tuning.
 
 ## 21.5 Compiler and test feedback
 
@@ -695,7 +730,7 @@ Compare models of similar size and compute. Measure neural steps, training cost,
 - How should symbol pointer scoring work?
 - Which identifiers can wait for the naming pass?
 - How should optional type and compiler annotations appear?
-- How should the English encoder and structural decoder communicate?
+- Does decoder-only prompt conditioning outperform a separate pretrained encoder at similar compute?
 - Should the naming model train jointly or separately?
 - Does structural decoding improve results at equal compute?
 
@@ -777,7 +812,9 @@ Train next-action prediction from the current state and partial program. Do not 
 
 ## 27.5 Add English conditioning
 
-Condition the working structural model on English descriptions.
+Use English prompt embeddings as a prefix to the structural action sequence. Keep separate embedding tables for text tokens and structural actions.
+
+Feed the current `Need` and controller state into each structural step. Add a separate encoder only as a comparison after this baseline works.
 
 ## 27.6 Add symbols and naming
 
@@ -848,49 +885,46 @@ The controller can derive the action trace shown in Section 22. The renderer the
 
 # 29. Architecture Summary
 
+The preferred first baseline is decoder-only:
+
 ```text
-                           English request
-                                  │
-                                  ▼
-                         ┌─────────────────┐
-                         │ English encoder │
-                         └────────┬────────┘
-                                  │
-                           semantic context
-                                  │
-                                  ▼
-                    ┌────────────────────────┐
-                    │ Structural decoder     │
-                    └────────────┬───────────┘
-                                 │ action scores
-                                 ▼
-                    ┌────────────────────────┐
-                    │ Controller             │
-                    │                        │
-                    │ - structural state     │
-                    │ - validity masks       │
-                    │ - custom IR updates    │
-                    │ - symbols and scope    │
-                    └────────────┬───────────┘
-                                 │
-                                 ▼
-                            Custom IR
-                                 │
-                    ┌────────────┴────────────┐
-                    │                         │
-                    ▼                         ▼
-              Naming pass             Compiler analysis
-                    │                 optional annotations
-                    └────────────┬────────────┘
-                                 ▼
-                              Renderer
-                                 │
-                                 ▼
-                              rustfmt
-                                 │
-                                 ▼
-                            Rust source
+English prompt embeddings ─────────────────────┐
+                                              │
+Previous structural actions ──────────────────┤
+                                              ▼
+Current Need and state ─────────────► Structural decoder
+                                              │ action scores
+                                              ▼
+                                   ┌────────────────────────┐
+                                   │ Controller             │
+                                   │                        │
+                                   │ - validity masks       │
+                                   │ - custom IR updates    │
+                                   │ - symbols and scope    │
+                                   │ - next Need and state  │
+                                   └────────────┬───────────┘
+                                                │
+                       ┌────────────────────────┴───────────┐
+                       │                                    │
+                       └──── feedback to decoder       Custom IR
+                                                            │
+                                               ┌────────────┴────────────┐
+                                               │                         │
+                                               ▼                         ▼
+                                         Naming pass             Compiler analysis
+                                               │                 optional annotations
+                                               └────────────┬────────────┘
+                                                            ▼
+                                                         Renderer
+                                                            │
+                                                            ▼
+                                                         rustfmt
+                                                            │
+                                                            ▼
+                                                       Rust source
 ```
+
+An encoder-decoder experiment can replace the prompt prefix with cross-attention to fixed prompt states. The controller feedback still enters the structural decoder.
 
 ---
 

@@ -31,3 +31,13 @@ The condensed version:
 ## Collaboration notes
 
 Record future agent decisions and unresolved issues in this file. Keep entries short and include the affected file and section.
+
+### 2026-08-29: English conditioning
+
+Updated `more_patterns_per_pattern_spec_condensed.md`, Sections 1, 10, 13, 17, 21, 25, 27, and 29.
+
+- The controller feeds the current `Need`, state, and partial-program context to the structural decoder.
+- A separate English encoder is optional and does not receive controller feedback.
+- The preferred first baseline is decoder-only prompt conditioning with separate text and structural-action embeddings.
+- The encoder-decoder design remains an equal-compute comparison.
+- Standard Transformer blocks can be reused. Structural inputs, constrained heads, symbol pointers, masks, and the controller interface remain custom.
