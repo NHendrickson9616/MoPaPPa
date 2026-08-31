@@ -3,19 +3,18 @@
 struct Collection {
     symbol: SymbolId,
     items: Option<Vec<Field>>,
-    isFixedLength: bool,
+    is_fixed_length: bool,
 }
 
 struct Function {
     symbol: SymbolId,
     generics: Option<Vec<GenericParam>>,
-    returnType: Option<Type>,
+    return_type: Option<Type>,
     params: Option<Vec<Param>>,
     body: Option<Block>,
 }
 
 struct Block {
-    returnType: Option<Type>,
     statements: Option<Vec<Statement>>,
     tail: Option<Expression>,
 }
@@ -23,7 +22,7 @@ struct Block {
 enum Statement {
     Block,
     FunctionDeclaration,
-    Call,
+    Call,       // not sure if this is really how I want to implement custom function calls
     EnumDeclaration,
     StructDeclaration,
     Use,
@@ -62,7 +61,7 @@ enum Type { // These are the types in the stdlib
     u64,
     u128,
     usize,
-    unit,
+    unit,       // () type
     f16,        // experimental
     f128,       // experimental
     never,      // experiemtnal
