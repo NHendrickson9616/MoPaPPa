@@ -1,69 +1,97 @@
-
-
 struct Collection {
-    symbol: SymbolId,
-    items: Option<Vec<Field>>,
-    is_fixed_length: bool,
+    pub symbol: SymbolId,
+    pub items: Vec<Field>,
+    pub is_fixed_length: bool,
 }
 
 struct Function {
-    symbol: SymbolId,
-    generics: Option<Vec<GenericParam>>,
-    return_type: Option<Type>,
-    params: Option<Vec<Param>>,
-    body: Option<Block>,
+    pub symbol: SymbolId,
+    pub generics: Vec<GenericParam>,
+    pub return_type: Option<Type>,
+    pub params: Vec<Param>,
+    pub body: Block,
 }
 
 struct Block {
-    statements: Option<Vec<Statement>>,
-    tail: Option<Expression>,
+    pub statements: Vec<Statement>,
+    pub tail: Option<Box<Expression>>,
 }
 
 enum Statement {
-    Block,
-    FunctionDeclaration,
-    Call,       // not sure if this is really how I want to implement custom function calls
-    EnumDeclaration,
-    StructDeclaration,
-    Use,
-    Mod,
-    Return,
-    If,         // Else can only happen after if...
-    Match,      // Arms can only happen after match...
-    Loop,
-    While,
-    For,
-    Break,
-    Continue,
-    Let,
+    Let(LetStatement),
+    Item(Item),
+    Expression(Expression),
 }
 
-enum Type { // These are the types in the stdlib
-    bool,
-    char,
-    f32,
-    f64,
-    fn,
-    i8,
-    i16,
-    i32,
-    i64,
-    i128,
-    isize,
-    pointer,
-    reference,
-    slice,
-    str,
-    tuple,
-    u8,
-    u16,
-    u32,
-    u64,
-    u128,
-    usize,
-    unit,       // () type
-    f16,        // experimental
-    f128,       // experimental
-    never,      // experiemtnal
-    custom(SymbolId),
+enum Expression {
+    Symbol(SymbolId),
+    Literal(Literal),
+
+    Binary(BinaryExpression),
+    Call(CallExpression),
+    Block(Block),
+    If(IfExpression),
+    Match(MatchExpression),
+    Loop(LoopExpression),
+    Closure(Closure),
+
+    Return(Option<Box<Expression>>),
+    Break(Option<Box<Expression>>),
+    Continue,
+}
+
+pub struct BinaryExpression {
+    pub operator: BinaryOperator,
+    pub left: Box<Expression>,
+    pub right: Box<Expression>,
+}
+
+pub enum BinaryOperator {
+    Add,
+    Sub,
+    Mul,
+    Div,
+}
+
+pub struct IfExpression {
+    pub condition: Box<Expression>,
+    pub then: Block,
+    pub else_expression: Option<Box<Expression>>, //Controller will have to limit to just if or block
+}
+
+pub struct LetStatement {
+    pub symbol: SymbolId,
+    pub mutable: bool,
+    pub type_annotation: Option<Type>,
+    pub value: Option<Expression>,
+}
+
+enum Type {
+    // These are the types in the stdlib
+    Bool,
+    Char,
+    F32,
+    F64,
+    I8,
+    I16,
+    I32,
+    I64,
+    I128,
+    Isize,
+    Pointer,
+    Reference,
+    Slice,
+    Str,
+    Tuple,
+    U8,
+    U16,
+    U32,
+    U64,
+    U128,
+    Usize,
+    Unit,  // () type
+    F16,   // experimental
+    F128,  // experimental
+    Never, // experiemtnal
+    Custom(SymbolId),
 }
