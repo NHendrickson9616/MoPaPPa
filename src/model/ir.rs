@@ -1,97 +1,181 @@
-struct Collection {
-    pub symbol: SymbolId,
-    pub items: Vec<Field>,
-    pub is_fixed_length: bool,
+//! Public, source-oriented intermediate representation for the executable MVP.
+//!
+//! The IR deliberately models only source constructs that the MVP can render.
+//! Names are represented by stable [`SymbolId`] values rather than strings so
+//! construction and naming can remain separate.
+
+/// A stable identity for a declared symbol.
+///
+/// A `SymbolId` is meaningful only within the [`Root`] that contains it. The
+/// renderer obtains its spelling from a name map and uses a deterministic
+/// fallback when the map has no entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SymbolId(pub u32);
+
+/// The explicit context in which an IR tree is rendered.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Root {
+    /// A compilation-unit-like sequence of top-level items.
+    Module { items: Vec<Item> },
+    /// A syntactically complete block suitable where Rust expects a block expression.
+    BlockFragment(Block),
 }
 
-struct Function {
-    pub symbol: SymbolId,
-    pub generics: Vec<GenericParam>,
-    pub return_type: Option<Type>,
-    pub params: Vec<Param>,
+/// A top-level item supported by the MVP.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Item {
+    /// A free function.
+    Function(Function),
+}
+
+/// A free function declaration.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Function {
+    /// The function's declared symbol.
+    pub name: SymbolId,
+    /// The function's parameters, in source order.
+    pub parameters: Vec<Parameter>,
+    /// The explicit return type.
+    pub return_type: PrimitiveType,
+    /// The function body.
     pub body: Block,
 }
 
-struct Block {
+/// A typed function parameter.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Parameter {
+    /// The parameter's declared symbol.
+    pub name: SymbolId,
+    /// The parameter type.
+    pub ty: PrimitiveType,
+}
+
+/// Primitive types supported by the MVP.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrimitiveType {
+    /// `bool`
+    Bool,
+    /// `char`
+    Char,
+    /// `i32`
+    I32,
+    /// `i64`
+    I64,
+    /// `isize`
+    Isize,
+    /// `u32`
+    U32,
+    /// `u64`
+    U64,
+    /// `usize`
+    Usize,
+    /// `f32`
+    F32,
+    /// `f64`
+    F64,
+    /// `()`
+    Unit,
+}
+
+/// A block with statements and an optional, semicolon-free tail expression.
+///
+/// `tail` is intentionally separate from `statements`: a tail expression
+/// evaluates to the block value, while [`Statement::Expression`] evaluates and
+/// discards its value.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct Block {
+    /// Statements evaluated in source order.
     pub statements: Vec<Statement>,
+    /// The block value, when present.
     pub tail: Option<Box<Expression>>,
 }
 
-enum Statement {
-    Let(LetStatement),
-    Item(Item),
+/// A statement supported in a block.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Statement {
+    /// A local binding with an optional explicit primitive type.
+    Let {
+        /// The local symbol declared by this statement.
+        name: SymbolId,
+        /// An optional source-level type annotation.
+        ty: Option<PrimitiveType>,
+        /// The initializing expression.
+        value: Expression,
+    },
+    /// An expression evaluated for side effects and terminated with `;`.
     Expression(Expression),
 }
 
-enum Expression {
+/// An expression supported by the MVP.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Expression {
+    /// A reference to a symbol in scope.
     Symbol(SymbolId),
+    /// A scalar literal.
     Literal(Literal),
-
-    Binary(BinaryExpression),
-    Call(CallExpression),
-    Block(Block),
-    If(IfExpression),
-    Match(MatchExpression),
-    Loop(LoopExpression),
-    Closure(Closure),
-
-    Return(Option<Box<Expression>>),
-    Break(Option<Box<Expression>>),
-    Continue,
+    /// An infix binary operation.
+    Binary {
+        /// The left operand.
+        left: Box<Expression>,
+        /// The operator.
+        operator: BinaryOperator,
+        /// The right operand.
+        right: Box<Expression>,
+    },
+    /// A direct call to an internally identified function.
+    Call {
+        /// The function symbol; paths and expression-valued callees are out of scope.
+        function: SymbolId,
+        /// Call arguments, in source order.
+        arguments: Vec<Expression>,
+    },
+    /// A conditional expression.
+    If {
+        /// The condition expression.
+        condition: Box<Expression>,
+        /// The block evaluated when the condition is true.
+        then_branch: Block,
+        /// The optional block evaluated when the condition is false.
+        else_branch: Option<Block>,
+    },
 }
 
-pub struct BinaryExpression {
-    pub operator: BinaryOperator,
-    pub left: Box<Expression>,
-    pub right: Box<Expression>,
+/// A scalar literal.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Literal {
+    /// An integer literal.
+    Integer(i128),
+    /// A UTF-8 string literal.
+    String(String),
+    /// A boolean literal.
+    Bool(bool),
 }
 
+/// Binary operators supported by the MVP.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BinaryOperator {
+    /// `+`
     Add,
-    Sub,
-    Mul,
-    Div,
-}
-
-pub struct IfExpression {
-    pub condition: Box<Expression>,
-    pub then: Block,
-    pub else_expression: Option<Box<Expression>>, //Controller will have to limit to just if or block
-}
-
-pub struct LetStatement {
-    pub symbol: SymbolId,
-    pub mutable: bool,
-    pub type_annotation: Option<Type>,
-    pub value: Option<Expression>,
-}
-
-enum Type {
-    // These are the types in the stdlib
-    Bool,
-    Char,
-    F32,
-    F64,
-    I8,
-    I16,
-    I32,
-    I64,
-    I128,
-    Isize,
-    Pointer,
-    Reference,
-    Slice,
-    Str,
-    Tuple,
-    U8,
-    U16,
-    U32,
-    U64,
-    U128,
-    Usize,
-    Unit,  // () type
-    F16,   // experimental
-    F128,  // experimental
-    Never, // experiemtnal
-    Custom(SymbolId),
+    /// `-`
+    Subtract,
+    /// `*`
+    Multiply,
+    /// `/`
+    Divide,
+    /// `==`
+    Equal,
+    /// `!=`
+    NotEqual,
+    /// `<`
+    LessThan,
+    /// `<=`
+    LessOrEqual,
+    /// `>`
+    GreaterThan,
+    /// `>=`
+    GreaterOrEqual,
+    /// `&&`
+    And,
+    /// `||`
+    Or,
 }

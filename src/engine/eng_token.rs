@@ -19,3 +19,9 @@ impl EnglishTokenizer {
         self.bpe.decode(tokens).unwrap()
     }
 }
+
+impl Default for EnglishTokenizer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
