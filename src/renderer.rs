@@ -1,263 +1,97 @@
 //! Deterministic rendering of the MVP IR to Rust source.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::{error::Error, fmt};
 
 use crate::model::ir::{
     BinaryOperator, Block, Expression, Function, Item, Literal, PrimitiveType, Root, Statement,
     SymbolId,
 };
+use crate::naming::{NameError, NameRegistry};
 
-/// Symbol spellings supplied to the renderer.
-///
-/// Values must be ASCII Rust identifiers or raw identifiers. Missing symbols are
-/// rendered as deterministic valid identifiers of the form `_symbol_<number>`.
-pub type NameMap = BTreeMap<SymbolId, String>;
-
-/// An invalid caller-provided symbol spelling.
+/// A failure to resolve a symbol name while rendering.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RenderError {
-    /// A name map entry is not a supported Rust identifier.
-    InvalidSymbolName {
-        /// The symbol associated with the invalid entry.
-        symbol: SymbolId,
-        /// The rejected name.
-        name: String,
-    },
-    /// Two distinct symbols resolve to the same source identifier.
-    ///
-    /// Raw identifier spelling is ignored when detecting collisions.
-    DuplicateSymbolName {
-        /// The duplicate final spelling.
-        name: String,
-        /// The first symbol using this spelling.
-        first: SymbolId,
-        /// The other symbol using this spelling.
-        second: SymbolId,
-    },
+    /// The naming registry could not resolve a symbol.
+    Naming(NameError),
 }
 
-/// Renders an IR root to deterministic Rust source.
+impl fmt::Display for RenderError {
+    fn fmt(&self, output: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Naming(error) => write!(output, "cannot render symbol name: {error}"),
+        }
+    }
+}
+
+impl Error for RenderError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Naming(error) => Some(error),
+        }
+    }
+}
+
+impl From<NameError> for RenderError {
+    fn from(error: NameError) -> Self {
+        Self::Naming(error)
+    }
+}
+
+/// Renders an IR root using names from a sealed registry.
 ///
-/// Names for symbols used by `root` are validated before rendering, so
-/// successful rendering cannot introduce invalid identifier syntax or aliases
-/// through a caller-provided name. Unused name-map entries are ignored.
-pub fn render(root: &Root, names: &NameMap) -> Result<String, RenderError> {
-    validate_names(root, names)?;
-    let mut renderer = Renderer { names };
-    Ok(renderer.root(root))
-}
-
-fn validate_names(root: &Root, names: &NameMap) -> Result<(), RenderError> {
-    let mut resolved_names = BTreeMap::new();
-    for symbol in symbols_in(root) {
-        let name = names
-            .get(&symbol)
-            .cloned()
-            .unwrap_or_else(|| fallback_name(symbol));
-        if !is_valid_identifier(&name) {
-            return Err(RenderError::InvalidSymbolName { symbol, name });
-        }
-        if let Some(first) = resolved_names.insert(canonical_identifier(&name), symbol) {
-            return Err(RenderError::DuplicateSymbolName {
-                name,
-                first,
-                second: symbol,
-            });
-        }
-    }
-    Ok(())
-}
-
-fn canonical_identifier(name: &str) -> String {
-    name.strip_prefix("r#").unwrap_or(name).to_owned()
-}
-
-fn symbols_in(root: &Root) -> BTreeSet<SymbolId> {
-    let mut symbols = BTreeSet::new();
-    match root {
-        Root::Module { items } => {
-            for item in items {
-                let Item::Function(function) = item;
-                symbols.insert(function.name);
-                for parameter in &function.parameters {
-                    symbols.insert(parameter.name);
-                }
-                collect_block_symbols(&function.body, &mut symbols);
-            }
-        }
-        Root::BlockFragment(block) => collect_block_symbols(block, &mut symbols),
-    }
-    symbols
-}
-
-fn collect_block_symbols(block: &Block, symbols: &mut BTreeSet<SymbolId>) {
-    for statement in &block.statements {
-        match statement {
-            Statement::Let { name, value, .. } => {
-                symbols.insert(*name);
-                collect_expression_symbols(value, symbols);
-            }
-            Statement::Expression(expression) => collect_expression_symbols(expression, symbols),
-        }
-    }
-    if let Some(tail) = &block.tail {
-        collect_expression_symbols(tail, symbols);
-    }
-}
-
-fn collect_expression_symbols(expression: &Expression, symbols: &mut BTreeSet<SymbolId>) {
-    match expression {
-        Expression::Symbol(symbol) => {
-            symbols.insert(*symbol);
-        }
-        Expression::Literal(_) => {}
-        Expression::Binary { left, right, .. } => {
-            collect_expression_symbols(left, symbols);
-            collect_expression_symbols(right, symbols);
-        }
-        Expression::Call {
-            function,
-            arguments,
-        } => {
-            symbols.insert(*function);
-            for argument in arguments {
-                collect_expression_symbols(argument, symbols);
-            }
-        }
-        Expression::If {
-            condition,
-            then_branch,
-            else_branch,
-        } => {
-            collect_expression_symbols(condition, symbols);
-            collect_block_symbols(then_branch, symbols);
-            if let Some(else_branch) = else_branch {
-                collect_block_symbols(else_branch, symbols);
-            }
-        }
-    }
-}
-
-fn fallback_name(symbol: SymbolId) -> String {
-    format!("_symbol_{}", symbol.0)
-}
-
-fn is_valid_identifier(name: &str) -> bool {
-    let identifier = name.strip_prefix("r#").unwrap_or(name);
-    let is_raw = identifier.len() != name.len();
-
-    if identifier.is_empty()
-        || identifier == "_"
-        || (!is_raw && is_keyword(identifier))
-        || (is_raw && matches!(identifier, "crate" | "self" | "super" | "Self"))
-    {
-        return false;
-    }
-
-    let mut characters = identifier.bytes();
-    matches!(characters.next(), Some(b'_' | b'a'..=b'z' | b'A'..=b'Z'))
-        && characters
-            .all(|character| matches!(character, b'_' | b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9'))
-}
-
-fn is_keyword(name: &str) -> bool {
-    matches!(
-        name,
-        "as" | "break"
-            | "const"
-            | "continue"
-            | "crate"
-            | "else"
-            | "enum"
-            | "extern"
-            | "false"
-            | "fn"
-            | "for"
-            | "if"
-            | "impl"
-            | "in"
-            | "let"
-            | "loop"
-            | "match"
-            | "mod"
-            | "move"
-            | "mut"
-            | "pub"
-            | "ref"
-            | "return"
-            | "self"
-            | "Self"
-            | "static"
-            | "struct"
-            | "super"
-            | "trait"
-            | "true"
-            | "type"
-            | "unsafe"
-            | "use"
-            | "where"
-            | "while"
-            | "async"
-            | "await"
-            | "dyn"
-            | "gen"
-            | "abstract"
-            | "become"
-            | "box"
-            | "do"
-            | "final"
-            | "macro"
-            | "override"
-            | "priv"
-            | "try"
-            | "typeof"
-            | "unsized"
-            | "virtual"
-            | "yield"
-            | "union"
-    )
+/// The registry is borrowed immutably: naming must be completed before
+/// rendering, and every symbol reached in `root` must have been registered.
+pub fn render(root: &Root, names: &NameRegistry) -> Result<String, RenderError> {
+    names.ensure_ready()?;
+    Renderer { names }.root(root)
 }
 
 struct Renderer<'a> {
-    names: &'a NameMap,
+    names: &'a NameRegistry,
 }
 
 impl Renderer<'_> {
-    fn root(&mut self, root: &Root) -> String {
+    fn root(&self, root: &Root) -> Result<String, RenderError> {
         match root {
-            Root::Module { items } => items
+            Root::Module { items } => Ok(items
                 .iter()
                 .map(|item| self.item(item))
-                .collect::<Vec<_>>()
-                .join("\n\n"),
+                .collect::<Result<Vec<_>, _>>()?
+                .join("\n\n")),
             Root::BlockFragment(block) => self.block(block, 0),
         }
     }
 
-    fn item(&mut self, item: &Item) -> String {
+    fn item(&self, item: &Item) -> Result<String, RenderError> {
         match item {
             Item::Function(function) => self.function(function),
         }
     }
 
-    fn function(&mut self, function: &Function) -> String {
+    fn function(&self, function: &Function) -> Result<String, RenderError> {
         let parameters = function
             .parameters
             .iter()
-            .map(|parameter| format!("{}: {}", self.name(parameter.name), self.ty(parameter.ty)))
-            .collect::<Vec<_>>()
+            .map(|parameter| {
+                Ok(format!(
+                    "{}: {}",
+                    self.name(parameter.name)?,
+                    self.ty(parameter.ty)
+                ))
+            })
+            .collect::<Result<Vec<_>, RenderError>>()?
             .join(", ");
-        format!(
+        Ok(format!(
             "fn {}({parameters}) -> {} {}",
-            self.name(function.name),
+            self.name(function.name)?,
             self.ty(function.return_type),
-            self.block(&function.body, 0)
-        )
+            self.block(&function.body, 0)?
+        ))
     }
 
-    fn block(&mut self, block: &Block, indent: usize) -> String {
+    fn block(&self, block: &Block, indent: usize) -> Result<String, RenderError> {
         if block.statements.is_empty() && block.tail.is_none() {
-            return "{}".to_owned();
+            return Ok("{}".to_owned());
         }
 
         let child_indent = indent + 4;
@@ -265,43 +99,52 @@ impl Renderer<'_> {
         let mut lines = block
             .statements
             .iter()
-            .map(|statement| format!("{padding}{}", self.statement(statement, child_indent)))
-            .collect::<Vec<_>>();
+            .map(|statement| {
+                Ok(format!(
+                    "{padding}{}",
+                    self.statement(statement, child_indent)?
+                ))
+            })
+            .collect::<Result<Vec<_>, RenderError>>()?;
         if let Some(tail) = &block.tail {
             lines.push(format!(
                 "{padding}{}",
-                self.expression(tail, 0, child_indent)
+                self.expression(tail, 0, child_indent)?
             ));
         }
-        format!("{{\n{}\n{}}}", lines.join("\n"), " ".repeat(indent))
+        Ok(format!(
+            "{{\n{}\n{}}}",
+            lines.join("\n"),
+            " ".repeat(indent)
+        ))
     }
 
-    fn statement(&mut self, statement: &Statement, indent: usize) -> String {
+    fn statement(&self, statement: &Statement, indent: usize) -> Result<String, RenderError> {
         match statement {
             Statement::Let { name, ty, value } => {
                 let annotation = ty
                     .map(|ty| format!(": {}", self.ty(ty)))
                     .unwrap_or_default();
-                format!(
+                Ok(format!(
                     "let {}{annotation} = {};",
-                    self.name(*name),
-                    self.expression(value, 0, indent)
-                )
+                    self.name(*name)?,
+                    self.expression(value, 0, indent)?
+                ))
             }
             Statement::Expression(expression) => {
-                format!("{};", self.expression(expression, 0, indent))
+                Ok(format!("{};", self.expression(expression, 0, indent)?))
             }
         }
     }
 
     fn expression(
-        &mut self,
+        &self,
         expression: &Expression,
         parent_precedence: u8,
         indent: usize,
-    ) -> String {
-        match expression {
-            Expression::Symbol(symbol) => self.name(*symbol),
+    ) -> Result<String, RenderError> {
+        Ok(match expression {
+            Expression::Symbol(symbol) => self.name(*symbol)?.to_owned(),
             Expression::Literal(literal) => self.literal(literal),
             Expression::Binary {
                 left,
@@ -311,9 +154,9 @@ impl Renderer<'_> {
                 let precedence = operator.precedence();
                 let rendered = format!(
                     "{} {} {}",
-                    self.expression(left, precedence, indent),
+                    self.expression(left, precedence, indent)?,
                     operator.source(),
-                    self.expression(right, precedence, indent)
+                    self.expression(right, precedence, indent)?
                 );
                 if precedence <= parent_precedence {
                     format!("({rendered})")
@@ -328,9 +171,9 @@ impl Renderer<'_> {
                 let arguments = arguments
                     .iter()
                     .map(|argument| self.expression(argument, 0, indent))
-                    .collect::<Vec<_>>()
+                    .collect::<Result<Vec<_>, _>>()?
                     .join(", ");
-                format!("{}({arguments})", self.name(*function))
+                format!("{}({arguments})", self.name(*function)?)
             }
             Expression::If {
                 condition,
@@ -339,12 +182,12 @@ impl Renderer<'_> {
             } => {
                 let mut rendered = format!(
                     "if {} {}",
-                    self.expression(condition, 0, indent),
-                    self.block(then_branch, indent)
+                    self.expression(condition, 0, indent)?,
+                    self.block(then_branch, indent)?
                 );
                 if let Some(else_branch) = else_branch {
                     rendered.push_str(" else ");
-                    rendered.push_str(&self.block(else_branch, indent));
+                    rendered.push_str(&self.block(else_branch, indent)?);
                 }
                 if parent_precedence > 0 {
                     format!("({rendered})")
@@ -352,7 +195,7 @@ impl Renderer<'_> {
                     rendered
                 }
             }
-        }
+        })
     }
 
     fn literal(&self, literal: &Literal) -> String {
@@ -363,11 +206,8 @@ impl Renderer<'_> {
         }
     }
 
-    fn name(&self, symbol: SymbolId) -> String {
-        self.names
-            .get(&symbol)
-            .cloned()
-            .unwrap_or_else(|| fallback_name(symbol))
+    fn name(&self, symbol: SymbolId) -> Result<&str, RenderError> {
+        self.names.name(symbol).map_err(RenderError::from)
     }
 
     fn ty(&self, ty: PrimitiveType) -> &'static str {
@@ -423,20 +263,30 @@ impl BinaryOperator {
 
 #[cfg(test)]
 mod tests {
-    use super::{NameMap, RenderError, render};
+    use std::error::Error;
+
+    use super::{RenderError, render};
     use crate::model::ir::{
         BinaryOperator, Block, Expression, Function, Item, Literal, Parameter, PrimitiveType, Root,
         Statement, SymbolId,
     };
+    use crate::naming::{NameError, NameRegistry};
 
-    fn names(entries: &[(u32, &str)]) -> NameMap {
-        entries
-            .iter()
-            .map(|(id, name)| (SymbolId(*id), (*name).to_owned()))
-            .collect()
+    fn names(entries: &[(u32, Option<&str>)]) -> NameRegistry {
+        let mut names = NameRegistry::new();
+        for (id, _) in entries {
+            names.register(SymbolId(*id)).unwrap();
+        }
+        names.seal();
+        for (id, spelling) in entries {
+            if let Some(spelling) = spelling {
+                names.assign(SymbolId(*id), *spelling).unwrap();
+            }
+        }
+        names
     }
 
-    fn source(root: &Root, names: &NameMap) -> String {
+    fn source(root: &Root, names: &NameRegistry) -> String {
         render(root, names).expect("test names must be valid")
     }
 
@@ -461,7 +311,7 @@ mod tests {
             })],
         };
 
-        let source = source(&root, &names(&[(1, "increment"), (2, "count")]));
+        let source = source(&root, &names(&[(1, Some("increment")), (2, Some("count"))]));
         syn::parse_file(&source).expect("rendered module must be Rust source");
         assert_eq!(
             source,
@@ -484,7 +334,7 @@ mod tests {
             })),
         });
 
-        let source = source(&root, &names(&[(1, "answer")]));
+        let source = source(&root, &names(&[(1, Some("answer"))]));
         syn::parse_str::<syn::Block>(&source).expect("rendered fragment must be a Rust block");
         assert_eq!(source, "{\n    let answer: i32 = 41;\n    answer + 1\n}");
     }
@@ -502,12 +352,12 @@ mod tests {
             tail: Some(Box::new(Expression::Literal(Literal::Bool(true)))),
         });
 
-        assert_eq!(source(&statement, &NameMap::new()), "{\n    true;\n}");
-        assert_eq!(source(&tail, &NameMap::new()), "{\n    true\n}");
+        assert_eq!(source(&statement, &names(&[])), "{\n    true;\n}");
+        assert_eq!(source(&tail, &names(&[])), "{\n    true\n}");
     }
 
     #[test]
-    fn renders_if_and_direct_calls() {
+    fn renders_if_and_calls_to_registered_ambient_functions() {
         let root = Root::BlockFragment(Block {
             statements: vec![],
             tail: Some(Box::new(Expression::If {
@@ -528,7 +378,8 @@ mod tests {
             })),
         });
 
-        let source = source(&root, &names(&[(2, "log")]));
+        // Block fragments may reference ambient symbols supplied by their context.
+        let source = source(&root, &names(&[(2, Some("log"))]));
         syn::parse_str::<syn::Block>(&source).expect("rendered if must parse");
         assert_eq!(
             source,
@@ -552,7 +403,7 @@ mod tests {
         });
 
         assert_eq!(
-            source(&right_nested, &NameMap::new()),
+            source(&right_nested, &names(&[(9, None), (10, None)])),
             "{\n    _symbol_9 - (_symbol_10 - 1)\n}"
         );
 
@@ -570,7 +421,7 @@ mod tests {
         });
 
         assert_eq!(
-            source(&left_nested, &NameMap::new()),
+            source(&left_nested, &names(&[(9, None), (10, None)])),
             "{\n    (_symbol_9 - _symbol_10) - 1\n}"
         );
     }
@@ -606,82 +457,116 @@ mod tests {
         });
 
         for root in [&left, &right] {
-            let rendered = source(root, &NameMap::new());
+            let rendered = source(root, &names(&[]));
             syn::parse_str::<syn::Block>(&rendered)
                 .expect("an if binary operand must be parenthesized and parse");
         }
         assert_eq!(
-            source(&left, &NameMap::new()),
+            source(&left, &names(&[])),
             "{\n    (if true {\n        1\n    } else {\n        2\n    }) + 3\n}"
         );
         assert_eq!(
-            source(&right, &NameMap::new()),
+            source(&right, &names(&[])),
             "{\n    3 + (if true {\n        1\n    } else {\n        2\n    })\n}"
         );
     }
 
     #[test]
-    fn validates_used_names_and_accepts_raw_identifiers() {
+    fn accepts_names_validated_by_the_registry_including_raw_identifiers() {
         let root = Root::BlockFragment(Block {
             statements: vec![],
             tail: Some(Box::new(Expression::Symbol(SymbolId(1)))),
         });
+        let mut names = NameRegistry::new();
+        names.register(SymbolId(1)).unwrap();
+        names.seal();
         assert_eq!(
-            render(&root, &names(&[(1, "not-valid")])),
-            Err(RenderError::InvalidSymbolName {
+            names.assign(SymbolId(1), "not-valid"),
+            Err(NameError::InvalidIdentifier {
                 symbol: SymbolId(1),
-                name: "not-valid".to_owned(),
+                spelling: "not-valid".to_owned(),
             })
         );
 
+        names.assign(SymbolId(1), "r#match").unwrap();
+        assert_eq!(source(&root, &names), "{\n    r#match\n}");
+    }
+
+    #[test]
+    fn collisions_are_rejected_during_registry_assignment() {
+        let mut names = NameRegistry::new();
+        names.register(SymbolId(1)).unwrap();
+        names.register(SymbolId(2)).unwrap();
+        names.seal();
+        names.assign(SymbolId(1), "same").unwrap();
         assert_eq!(
-            source(&root, &names(&[(1, "r#match")])),
-            "{\n    r#match\n}"
+            names.assign(SymbolId(2), "same"),
+            Err(NameError::SpellingCollision {
+                symbol: SymbolId(2),
+                spelling: "same".to_owned(),
+                existing_symbol: SymbolId(1),
+                existing_spelling: "same".to_owned(),
+            })
+        );
+
+        let mut fallback_collision = NameRegistry::new();
+        fallback_collision.register(SymbolId(1)).unwrap();
+        fallback_collision.register(SymbolId(2)).unwrap();
+        fallback_collision.seal();
+        assert_eq!(
+            fallback_collision.assign(SymbolId(2), "r#_symbol_1"),
+            Err(NameError::SpellingCollision {
+                symbol: SymbolId(2),
+                spelling: "r#_symbol_1".to_owned(),
+                existing_symbol: SymbolId(1),
+                existing_spelling: "_symbol_1".to_owned(),
+            })
         );
     }
 
     #[test]
-    fn rejects_supplied_and_fallback_name_collisions() {
+    fn reports_unknown_and_unsealed_registries_while_rendering() {
         let root = Root::BlockFragment(Block {
             statements: vec![],
-            tail: Some(Box::new(Expression::Binary {
-                left: Box::new(Expression::Symbol(SymbolId(1))),
-                operator: BinaryOperator::Add,
-                right: Box::new(Expression::Symbol(SymbolId(2))),
-            })),
+            tail: Some(Box::new(Expression::Symbol(SymbolId(1)))),
         });
+        let mut unknown = NameRegistry::new();
+        unknown.seal();
+        assert_eq!(
+            render(&root, &unknown),
+            Err(RenderError::Naming(NameError::UnknownSymbol {
+                symbol: SymbolId(1)
+            }))
+        );
 
+        let mut unsealed = NameRegistry::new();
+        unsealed.register(SymbolId(1)).unwrap();
+        let error = render(&root, &unsealed).unwrap_err();
+        assert_eq!(error, RenderError::Naming(NameError::NamingPhaseNotBegun));
         assert_eq!(
-            render(&root, &names(&[(1, "same"), (2, "same")])),
-            Err(RenderError::DuplicateSymbolName {
-                name: "same".to_owned(),
-                first: SymbolId(1),
-                second: SymbolId(2),
-            })
+            error.to_string(),
+            "cannot render symbol name: naming has not begun"
         );
-        assert_eq!(
-            render(&root, &names(&[(2, "_symbol_1")])),
-            Err(RenderError::DuplicateSymbolName {
-                name: "_symbol_1".to_owned(),
-                first: SymbolId(1),
-                second: SymbolId(2),
-            })
-        );
-        assert_eq!(
-            render(&root, &names(&[(1, "foo"), (2, "r#foo")])),
-            Err(RenderError::DuplicateSymbolName {
-                name: "r#foo".to_owned(),
-                first: SymbolId(1),
-                second: SymbolId(2),
-            })
-        );
-        assert_eq!(
-            render(&root, &names(&[(2, "r#_symbol_1")])),
-            Err(RenderError::DuplicateSymbolName {
-                name: "r#_symbol_1".to_owned(),
-                first: SymbolId(1),
-                second: SymbolId(2),
-            })
-        );
+        assert!(error.source().is_some());
+    }
+
+    #[test]
+    fn requires_a_sealed_registry_even_when_no_symbols_are_resolved() {
+        let roots = [
+            Root::Module { items: vec![] },
+            Root::BlockFragment(Block::default()),
+            Root::BlockFragment(Block {
+                statements: vec![],
+                tail: Some(Box::new(Expression::Literal(Literal::Integer(1)))),
+            }),
+        ];
+        let unsealed = NameRegistry::new();
+
+        for root in roots {
+            assert_eq!(
+                render(&root, &unsealed),
+                Err(RenderError::Naming(NameError::NamingPhaseNotBegun))
+            );
+        }
     }
 }

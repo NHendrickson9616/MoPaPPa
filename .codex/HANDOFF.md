@@ -14,10 +14,15 @@
   an optional tail expression.
 - Closures, patterns, local items, `match`, loops, paths/methods, and compiler
   annotations are intentionally out of scope.
-- Symbols have stable `SymbolId` identities. Rendering receives their names
-  separately, rejects invalid name-map entries, and uses deterministic valid
-  fallback identifiers when unmapped. Rendered symbols must resolve to distinct
-  spellings, preventing accidental aliases.
+- Symbols have stable `SymbolId` identities. Deferred two-phase naming through
+  `NameRegistry` (register the complete context, then seal and optionally assign
+  names) is the current default; callers choose the registration order and
+  symbol universe. That universe includes declarations plus ambient symbols
+  referenced by block fragments. Every registered symbol reserves its fallback,
+  and the renderer borrows the sealed registry as its single naming source.
+- Rendering checks syntax and naming consistency only. The controller/context
+  owns semantic visibility and call-legality validation.
+- Integration of the future English-token naming head remains future work.
 
 ## Structural action-trace milestone
 

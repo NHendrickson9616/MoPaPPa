@@ -6,9 +6,11 @@
 
 /// A stable identity for a declared symbol.
 ///
-/// A `SymbolId` is meaningful only within the [`Root`] that contains it. The
-/// renderer obtains its spelling from a name map and uses a deterministic
-/// fallback when the map has no entry.
+/// Rendering resolves each `SymbolId` through the naming registry for its
+/// context. A registered symbol without an assigned spelling uses its
+/// deterministic fallback; a missing registry entry is an error. For a
+/// [`Root::BlockFragment`], the context may register ambient symbols in addition
+/// to symbols declared within the fragment.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SymbolId(pub u32);
 
