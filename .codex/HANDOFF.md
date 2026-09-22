@@ -18,3 +18,11 @@
   separately, rejects invalid name-map entries, and uses deterministic valid
   fallback identifiers when unmapped. Rendered symbols must resolve to distinct
   spellings, preventing accidental aliases.
+
+## Structural action-trace milestone
+
+- `src/controller.rs` deterministically derives and validates typed action traces
+  from completed MVP IR. It uses declaration allocations, symbol-pointer
+  actions, list continuation/end actions, and the two settled block endings.
+- This is trace generation only. A mutable controller that applies/replays
+  actions and allocates symbols during decoding remains future work.
