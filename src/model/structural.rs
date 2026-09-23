@@ -1,7 +1,4 @@
-//! End-to-end inference for the fixed structural output heads.
-//!
-//! Pointer and value routes deliberately remain outside this boundary: they
-//! require runtime symbol memory or a non-categorical predictor respectively.
+//! End-to-end inference for structural output heads.
 
 use candle_core::{Result, Tensor};
 use candle_nn::VarBuilder;
@@ -150,6 +147,57 @@ impl StructuralModel {
         let logits = self.heads.forward(head, &hidden)?;
         let legal = Tensor::from_vec(legal, (1, candidate_count), logits.device())?;
         apply_legal_mask(&logits, &legal)
+    }
+
+    /// Computes the decoder state for the last structural position.
+    ///
+    /// Runners retain this exact `[1, D]` state for declaration memory and use
+    /// it to score dynamic pointers without a second decoder pass.
+    pub(crate) fn last_hidden(&self, sequence: &CausalSequence) -> Result<Tensor> {
+        let embeddings = self.embeddings.forward(sequence)?;
+        self.decoder.last_hidden(&embeddings)
+    }
+
+    /// Dispatches and masks a fixed head from an already-computed last state.
+    pub(crate) fn fixed_logits_from_hidden(
+        &self,
+        hidden: &Tensor,
+        step: &ModelStep,
+    ) -> Result<Tensor> {
+        let (head, candidates) = fixed_request(step)?;
+        let candidate_count = head
+            .fixed_candidate_count()
+            .expect("fixed output head has a fixed vocabulary");
+        let mut legal = vec![0u8; candidate_count];
+        for candidate in candidates {
+            let id = usize::from(candidate.id);
+            if id >= candidate_count {
+                candle_core::bail!("fixed candidate ID {} is out of range", candidate.id)
+            }
+            if legal[id] != 0 {
+                candle_core::bail!("duplicate fixed candidate ID {}", candidate.id)
+            }
+            legal[id] = 1;
+        }
+        let logits = self.heads.forward(head, hidden)?;
+        let legal = Tensor::from_vec(legal, (1, candidate_count), logits.device())?;
+        apply_legal_mask(&logits, &legal)
+    }
+}
+
+fn fixed_request(
+    step: &ModelStep,
+) -> Result<(
+    crate::training::OutputHead,
+    &[super::bridge::FixedCandidate],
+)> {
+    match step {
+        ModelStep::Needs {
+            route: ModelRoute::Fixed(head),
+            candidates: CandidateSet::Fixed(candidates),
+            ..
+        } if !candidates.is_empty() => Ok((*head, candidates)),
+        _ => candle_core::bail!("model step is not a nonempty fixed request"),
     }
 }
 

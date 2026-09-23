@@ -122,22 +122,44 @@ impl StructuralPosition {
         else {
             return Err(SequenceError::CompleteInferenceStep);
         };
-        let ModelRoute::Fixed(output_head) = route else {
-            return Err(SequenceError::UnsupportedInferenceRoute);
-        };
-        let CandidateSet::Fixed(_) = candidates else {
-            return Err(SequenceError::UnsupportedInferenceRoute);
+        let (output_head, observation, dynamic_candidate_count) = match (need, route, candidates) {
+            (_, ModelRoute::Fixed(output_head), CandidateSet::Fixed(_)) => {
+                (*output_head, Observation::None, 0)
+            }
+            (Need::SymbolReference, ModelRoute::DynamicPointer, CandidateSet::Symbols(symbols)) => {
+                (
+                    OutputHead::SymbolPointer,
+                    Observation::DynamicCandidates(symbols.clone()),
+                    symbols.len(),
+                )
+            }
+            (
+                Need::DirectCallTarget,
+                ModelRoute::DynamicPointer,
+                CandidateSet::Symbols(symbols),
+            ) => (
+                OutputHead::DirectCallTarget,
+                Observation::DynamicCandidates(symbols.clone()),
+                symbols.len(),
+            ),
+            (
+                Need::Literal,
+                ModelRoute::Value(super::bridge::ValueRequest::Integer),
+                CandidateSet::Value(super::bridge::ValueRequest::Integer),
+            ) => (OutputHead::LiteralKind, Observation::None, 0),
+            _ => return Err(SequenceError::UnsupportedInferenceRoute),
         };
         Ok(Self {
             previous_action,
             need: *need,
-            output_head: *output_head,
+            output_head,
             state: ControllerStateFeatures {
                 completed_actions: u32::try_from(completed_actions)
                     .map_err(|_| SequenceError::LengthOverflow)?,
-                dynamic_candidate_count: 0,
+                dynamic_candidate_count: u32::try_from(dynamic_candidate_count)
+                    .map_err(|_| SequenceError::LengthOverflow)?,
             },
-            observation: Observation::None,
+            observation,
         })
     }
 }
