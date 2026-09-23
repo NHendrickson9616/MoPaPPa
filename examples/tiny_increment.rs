@@ -1,6 +1,7 @@
-use candle_core::{DType, Device};
+use candle_core::DType;
 use candle_nn::{VarBuilder, VarMap};
 use mopappa::{
+    engine::device::{device_name, selected_device},
     model::{
         bridge::ModelValue, decoder::DecoderConfig, embeddings::EmbeddingConfig, ir::SymbolId,
         runner::GenerationRunner, sequence::TokenizerIdentity, structural::StructuralModel,
@@ -21,7 +22,8 @@ fn fixed(
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let device = Device::Cpu;
+    let device = selected_device()?;
+    println!("Device: {}", device_name(&device));
     let tokenizer = TokenizerIdentity::new("tiny-increment", "1", "sixteen-tokens")
         .map_err(|error| format!("{error:?}"))?;
     let variables = VarMap::new();

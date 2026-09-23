@@ -31,7 +31,11 @@ pub struct TinyOverfitReport {
 
 /// Overfits two root decisions while optimizing only `structural.*` variables.
 pub fn run_tiny_overfit() -> Result<TinyOverfitReport> {
-    let device = Device::Cpu;
+    run_tiny_overfit_on(&Device::Cpu)
+}
+
+/// Runs the tiny frozen-backbone experiment on the selected device.
+pub fn run_tiny_overfit_on(device: &Device) -> Result<TinyOverfitReport> {
     let tokenizer = TokenizerIdentity::new("tiny-overfit", "1", "eight-tokens")
         .map_err(|error| candle_core::Error::Msg(format!("{error:?}")))?;
     let vars = VarMap::new();
@@ -51,7 +55,7 @@ pub fn run_tiny_overfit() -> Result<TinyOverfitReport> {
             max_seq_len: 8,
             norm_eps: 1e-5,
         },
-        VarBuilder::from_varmap(&vars, DType::F32, &device),
+        VarBuilder::from_varmap(&vars, DType::F32, device),
     )?;
 
     // Both examples ask the untouched controller for its initial Root step.
@@ -61,10 +65,7 @@ pub fn run_tiny_overfit() -> Result<TinyOverfitReport> {
         inference_sequence(&[1], &tokenizer, &root_step)?,
         inference_sequence(&[2], &tokenizer, &root_step)?,
     ];
-    let targets = [
-        Tensor::new(&[0u32], &device)?,
-        Tensor::new(&[1u32], &device)?,
-    ];
+    let targets = [Tensor::new(&[0u32], device)?, Tensor::new(&[1u32], device)?];
 
     let (trainable, total_vars) = structural_variables(&vars);
     let trainable_vars = trainable.len();

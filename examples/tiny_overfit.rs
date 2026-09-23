@@ -1,7 +1,12 @@
-use mopappa::model::experiment::run_tiny_overfit;
+use mopappa::{
+    engine::device::{device_name, selected_device},
+    model::experiment::run_tiny_overfit_on,
+};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let report = run_tiny_overfit()?;
+    let device = selected_device()?;
+    println!("Device: {}", device_name(&device));
+    let report = run_tiny_overfit_on(&device)?;
     println!("{report:#?}");
 
     let substantially_improved =

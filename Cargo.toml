@@ -3,6 +3,10 @@ name = "mopappa"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = []
+cuda = ["candle-core/cuda", "candle-nn/cuda"]
+
 [dependencies]
 candle-core = { version = "0.11.0", default-features = false }
 candle-nn = { version = "0.11.0", default-features = false }
