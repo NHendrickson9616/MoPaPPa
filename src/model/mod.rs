@@ -2,3 +2,4 @@
 
 pub mod decoder;
 pub mod ir;
+pub mod sequence;
