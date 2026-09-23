@@ -6,5 +6,6 @@ pub mod decoder;
 pub mod embedding_ids;
 pub mod embeddings;
 pub mod ir;
+pub mod runner;
 pub mod sequence;
 pub mod structural;

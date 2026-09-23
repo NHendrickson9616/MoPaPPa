@@ -3,9 +3,10 @@
 //! structural projections.
 
 use crate::controller::{Action, DeclarationAction, LiteralAction, Need};
+use crate::model::bridge::{CandidateSet, ModelRoute, ModelStep};
 use crate::training::{
     Annotation, DeclarationKind, FixedTarget, LiteralKind, Observation, OutputHead, SchemaVersion,
-    Target, TrainingSequence,
+    TRAINING_SCHEMA_VERSION, Target, TrainingSequence,
 };
 use std::collections::BTreeSet;
 
@@ -106,6 +107,39 @@ impl StructuralPosition {
     pub fn observation(&self) -> &Observation {
         &self.observation
     }
+
+    pub(crate) fn from_model_step(
+        step: &ModelStep,
+        previous_action: PreviousAction,
+        completed_actions: usize,
+    ) -> Result<Self, SequenceError> {
+        let ModelStep::Needs {
+            need,
+            route,
+            candidates,
+            ..
+        } = step
+        else {
+            return Err(SequenceError::CompleteInferenceStep);
+        };
+        let ModelRoute::Fixed(output_head) = route else {
+            return Err(SequenceError::UnsupportedInferenceRoute);
+        };
+        let CandidateSet::Fixed(_) = candidates else {
+            return Err(SequenceError::UnsupportedInferenceRoute);
+        };
+        Ok(Self {
+            previous_action,
+            need: *need,
+            output_head: *output_head,
+            state: ControllerStateFeatures {
+                completed_actions: u32::try_from(completed_actions)
+                    .map_err(|_| SequenceError::LengthOverflow)?,
+                dynamic_candidate_count: 0,
+            },
+            observation: Observation::None,
+        })
+    }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Position {
@@ -147,6 +181,7 @@ impl SequencePosition {
 pub struct CausalSequence {
     metadata: EncodingMetadata,
     positions: Vec<SequencePosition>,
+    inference_actions: Option<Vec<Action>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -171,6 +206,8 @@ pub enum SequenceError {
     StateHistoryMismatch { position: usize },
     ObservationCountMismatch { position: usize },
     MetadataMismatch { sequence: usize },
+    CompleteInferenceStep,
+    UnsupportedInferenceRoute,
 }
 
 impl CausalSequence {
@@ -253,9 +290,51 @@ impl CausalSequence {
                 tokenizer,
             },
             positions,
+            inference_actions: None,
         };
         value.validate()?;
         Ok(value)
+    }
+
+    /// Builds an unsupervised causal input ending at the current live decision.
+    ///
+    /// Unlike teacher-forcing construction, structural positions deliberately
+    /// carry no target. `history` contains the exact inputs previously scored
+    /// alongside the actions that were accepted from them.
+    pub(crate) fn from_inference(
+        prefix: &[TokenId],
+        tokenizer: &TokenizerIdentity,
+        history: &[(StructuralPosition, Action)],
+        current: StructuralPosition,
+    ) -> Self {
+        let mut positions: Vec<_> = prefix
+            .iter()
+            .copied()
+            .map(|token| SequencePosition {
+                input: Position::EnglishToken(token),
+                supervision: None,
+                source_annotation: Annotation::None,
+            })
+            .collect();
+        positions.extend(history.iter().map(|(input, _)| SequencePosition {
+            input: Position::Structural(input.clone()),
+            supervision: None,
+            source_annotation: Annotation::None,
+        }));
+        positions.push(SequencePosition {
+            input: Position::Structural(current),
+            supervision: None,
+            source_annotation: Annotation::None,
+        });
+        Self {
+            metadata: EncodingMetadata {
+                protocol_version: SEQUENCE_PROTOCOL_VERSION,
+                training_schema_version: TRAINING_SCHEMA_VERSION,
+                tokenizer: tokenizer.clone(),
+            },
+            positions,
+            inference_actions: Some(history.iter().map(|(_, action)| action.clone()).collect()),
+        }
     }
     pub fn validate(&self) -> Result<(), SequenceError> {
         let mut prior: Option<&Action> = None;
@@ -279,10 +358,6 @@ impl CausalSequence {
                     }
                 }
                 Position::Structural(input) => {
-                    let s = item
-                        .supervision
-                        .as_ref()
-                        .ok_or(SequenceError::MissingStructuralSupervision { position: p })?;
                     let expected =
                         prior.map_or(PreviousAction::Bos, |a| PreviousAction::Action(a.clone()));
                     if input.previous_action != expected {
@@ -296,6 +371,18 @@ impl CausalSequence {
                     {
                         return Err(SequenceError::ObservationCountMismatch { position: p });
                     }
+                    if let Some(actions) = &self.inference_actions {
+                        if item.supervision.is_some() {
+                            return Err(SequenceError::SupervisionOnNonStructural { position: p });
+                        }
+                        prior = actions.get(n);
+                        n += 1;
+                        continue;
+                    }
+                    let s = item
+                        .supervision
+                        .as_ref()
+                        .ok_or(SequenceError::MissingStructuralSupervision { position: p })?;
                     validate_route(
                         n,
                         input.need,
