@@ -3,6 +3,7 @@
 use candle_core::{DType, IndexOp, Result, Tensor};
 use candle_nn::VarBuilder;
 
+use super::runner::GenerationModel;
 use super::{
     bridge::{ModelRoute, ModelStep},
     decoder::RoutedHeads,
@@ -60,6 +61,28 @@ impl PretrainedStructuralModel {
 
     /// Scores the requested fixed head. Pointer and value routes are unsupported.
     pub fn fixed_logits(&mut self, sequence: &CausalSequence, step: &ModelStep) -> Result<Tensor> {
+        let last = sequence
+            .positions()
+            .last()
+            .ok_or_else(|| candle_core::Error::Msg("sequence must not be empty".into()))?;
+        let Position::Structural(position) = last.input() else {
+            candle_core::bail!("last sequence position must be structural")
+        };
+        let ModelStep::Needs {
+            route: ModelRoute::Fixed(head),
+            ..
+        } = step
+        else {
+            candle_core::bail!("pretrained structural model supports fixed heads only")
+        };
+        if position.output_head() != *head {
+            candle_core::bail!("last structural output head does not match model step head")
+        }
+        let hidden = self.last_hidden(sequence)?;
+        self.fixed_logits_from_hidden(&hidden, step)
+    }
+
+    fn last_hidden(&mut self, sequence: &CausalSequence) -> Result<Tensor> {
         sequence
             .validate_supported(&SupportedMetadata {
                 protocol_version: SEQUENCE_PROTOCOL_VERSION,
@@ -69,34 +92,13 @@ impl PretrainedStructuralModel {
             .map_err(|error| {
                 candle_core::Error::Msg(format!("unsupported causal sequence: {error:?}"))
             })?;
-        match step {
-            ModelStep::Needs {
-                route: ModelRoute::Fixed(_),
-                ..
-            } => {}
-            ModelStep::Needs {
-                route: ModelRoute::DynamicPointer | ModelRoute::Value(_),
-                ..
-            } => candle_core::bail!("pretrained structural model supports fixed heads only"),
-            ModelStep::Complete => candle_core::bail!("complete model step has no logits"),
-        }
         let positions = sequence.positions();
         let last = positions
             .last()
             .ok_or_else(|| candle_core::Error::Msg("sequence must not be empty".into()))?;
-        let Position::Structural(last_position) = last.input() else {
+        let Position::Structural(_) = last.input() else {
             candle_core::bail!("last sequence position must be structural")
         };
-        let ModelStep::Needs {
-            route: ModelRoute::Fixed(head),
-            ..
-        } = step
-        else {
-            unreachable!()
-        };
-        if last_position.output_head() != *head {
-            candle_core::bail!("last structural output head does not match model step head")
-        }
         if positions.len() > self.config.max_position_embeddings {
             candle_core::bail!("sequence exceeds pretrained maximum position count")
         }
@@ -125,13 +127,26 @@ impl PretrainedStructuralModel {
         let input = Tensor::cat(&rows, 0)?.unsqueeze(0)?;
         self.cache = Cache::new(false, self.dtype, &self.config, &device)?;
         let hidden = self.backbone.forward_hidden(&input, 0, &mut self.cache)?;
-        let last = hidden.i((.., positions.len() - 1, ..))?.contiguous()?;
-        fixed_logits_from_hidden(&self.heads, &last, step)
+        hidden.i((.., positions.len() - 1, ..))?.contiguous()
+    }
+
+    fn fixed_logits_from_hidden(&self, hidden: &Tensor, step: &ModelStep) -> Result<Tensor> {
+        fixed_logits_from_hidden(&self.heads, hidden, step)
     }
 
     fn cache_device(&self) -> &candle_core::Device {
         // Every structural tensor is created on the same device as the cache.
         // The head output is a convenient stable device owner.
         self.embeddings.device()
+    }
+}
+
+impl GenerationModel for PretrainedStructuralModel {
+    fn last_hidden(&mut self, sequence: &CausalSequence) -> Result<Tensor> {
+        PretrainedStructuralModel::last_hidden(self, sequence)
+    }
+
+    fn fixed_logits_from_hidden(&mut self, hidden: &Tensor, step: &ModelStep) -> Result<Tensor> {
+        PretrainedStructuralModel::fixed_logits_from_hidden(self, hidden, step)
     }
 }

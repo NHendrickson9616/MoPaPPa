@@ -76,9 +76,37 @@ struct Current {
     logits: Option<Tensor>,
 }
 
+/// Model operations needed by stateful structural generation.
+///
+/// The hidden state remains graph-connected so it can be used both by a fixed
+/// head and, when a declaration is accepted, as pointer memory.
+pub trait GenerationModel {
+    fn last_hidden(&mut self, sequence: &CausalSequence) -> candle_core::Result<Tensor>;
+
+    fn fixed_logits_from_hidden(
+        &mut self,
+        hidden: &Tensor,
+        step: &ModelStep,
+    ) -> candle_core::Result<Tensor>;
+}
+
+impl GenerationModel for StructuralModel {
+    fn last_hidden(&mut self, sequence: &CausalSequence) -> candle_core::Result<Tensor> {
+        StructuralModel::last_hidden(self, sequence)
+    }
+
+    fn fixed_logits_from_hidden(
+        &mut self,
+        hidden: &Tensor,
+        step: &ModelStep,
+    ) -> candle_core::Result<Tensor> {
+        StructuralModel::fixed_logits_from_hidden(self, hidden, step)
+    }
+}
+
 /// A generation session with declaration-keyed dynamic pointer memory.
-pub struct GenerationRunner {
-    model: StructuralModel,
+pub struct GenerationRunner<M: GenerationModel = StructuralModel> {
+    model: M,
     controller: DecodeController,
     english_prefix: Vec<TokenId>,
     tokenizer: TokenizerIdentity,
@@ -87,12 +115,8 @@ pub struct GenerationRunner {
     current: Option<Current>,
 }
 
-impl GenerationRunner {
-    pub fn new(
-        model: StructuralModel,
-        english_prefix: Vec<TokenId>,
-        tokenizer: TokenizerIdentity,
-    ) -> Self {
+impl<M: GenerationModel> GenerationRunner<M> {
+    pub fn new(model: M, english_prefix: Vec<TokenId>, tokenizer: TokenizerIdentity) -> Self {
         Self {
             model,
             controller: DecodeController::new(),
