@@ -7,8 +7,11 @@
 use candle_core::{DType, Device, Result, Tensor};
 use candle_nn::{LayerNorm, Linear, Module, VarBuilder, layer_norm, linear};
 
+use crate::training::OutputHead;
+
 /// Prefixes are part of the public parameter contract used by future trainers.
 pub const BACKBONE_PARAMETER_PREFIX: &str = "backbone";
+pub const PRETRAINED_PARAMETER_PREFIX: &str = "pretrained";
 pub const STRUCTURAL_PARAMETER_PREFIX: &str = "structural";
 
 #[derive(Clone, Debug, PartialEq)]
@@ -178,86 +181,109 @@ impl Decoder {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum HeadRoute {
-    Item,
-    Expression,
-    Type,
-    BinaryOperator,
-    ListContinue,
-    NewBinding,
-    FreeToken,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RoutedHeadConfig {
-    pub item: usize,
-    pub expression: usize,
-    pub ty: usize,
-    pub binary_operator: usize,
-    pub list_continue: usize,
-    pub new_binding: usize,
-    pub free_token: usize,
-}
-
-impl RoutedHeadConfig {
-    pub fn validate(&self, d_model: usize) -> Result<()> {
-        if d_model == 0 {
-            candle_core::bail!("d_model must be greater than zero")
-        }
-        for (route, size) in [
-            ("item", self.item),
-            ("expression", self.expression),
-            ("type", self.ty),
-            ("binary_operator", self.binary_operator),
-            ("list_continue", self.list_continue),
-            ("new_binding", self.new_binding),
-            ("free_token", self.free_token),
-        ] {
-            if size == 0 {
-                candle_core::bail!("{route} head must have at least one candidate")
-            }
-        }
-        Ok(())
-    }
-}
-
 /// Fixed structural classifiers. Only the selected projection is evaluated.
 pub struct RoutedHeads {
-    item: Linear,
+    root: Linear,
+    item_list: Linear,
+    declaration_kind: Linear,
+    parameter_list: Linear,
     expression: Linear,
     ty: Linear,
+    block: Linear,
+    type_annotation: Linear,
+    literal_kind: Linear,
     binary_operator: Linear,
-    list_continue: Linear,
-    new_binding: Linear,
-    free_token: Linear,
+    call_argument: Linear,
+    if_else: Linear,
 }
 
 impl RoutedHeads {
-    pub fn new(d_model: usize, sizes: &RoutedHeadConfig, vb: VarBuilder<'_>) -> Result<Self> {
-        sizes.validate(d_model)?;
+    pub fn new(d_model: usize, vb: VarBuilder<'_>) -> Result<Self> {
+        if d_model == 0 {
+            candle_core::bail!("d_model must be greater than zero")
+        }
         let vb = vb.pp(STRUCTURAL_PARAMETER_PREFIX).pp("heads");
         Ok(Self {
-            item: linear(d_model, sizes.item, vb.pp("item"))?,
-            expression: linear(d_model, sizes.expression, vb.pp("expression"))?,
-            ty: linear(d_model, sizes.ty, vb.pp("type"))?,
-            binary_operator: linear(d_model, sizes.binary_operator, vb.pp("binary_operator"))?,
-            list_continue: linear(d_model, sizes.list_continue, vb.pp("list_continue"))?,
-            new_binding: linear(d_model, sizes.new_binding, vb.pp("new_binding"))?,
-            free_token: linear(d_model, sizes.free_token, vb.pp("free_token"))?,
+            root: fixed_head(d_model, OutputHead::Root, vb.pp("root"))?,
+            item_list: fixed_head(d_model, OutputHead::ItemList, vb.pp("item_list"))?,
+            declaration_kind: fixed_head(
+                d_model,
+                OutputHead::DeclarationKind,
+                vb.pp("declaration_kind"),
+            )?,
+            parameter_list: fixed_head(
+                d_model,
+                OutputHead::ParameterList,
+                vb.pp("parameter_list"),
+            )?,
+            ty: fixed_head(d_model, OutputHead::Type, vb.pp("type"))?,
+            block: fixed_head(d_model, OutputHead::Block, vb.pp("block"))?,
+            type_annotation: fixed_head(
+                d_model,
+                OutputHead::TypeAnnotation,
+                vb.pp("type_annotation"),
+            )?,
+            expression: fixed_head(d_model, OutputHead::Expression, vb.pp("expression"))?,
+            literal_kind: fixed_head(d_model, OutputHead::LiteralKind, vb.pp("literal_kind"))?,
+            binary_operator: fixed_head(
+                d_model,
+                OutputHead::BinaryOperator,
+                vb.pp("binary_operator"),
+            )?,
+            call_argument: fixed_head(d_model, OutputHead::CallArgument, vb.pp("call_argument"))?,
+            if_else: fixed_head(d_model, OutputHead::IfElse, vb.pp("if_else"))?,
         })
     }
 
-    pub fn forward(&self, route: HeadRoute, hidden: &Tensor) -> Result<Tensor> {
-        match route {
-            HeadRoute::Item => self.item.forward(hidden),
-            HeadRoute::Expression => self.expression.forward(hidden),
-            HeadRoute::Type => self.ty.forward(hidden),
-            HeadRoute::BinaryOperator => self.binary_operator.forward(hidden),
-            HeadRoute::ListContinue => self.list_continue.forward(hidden),
-            HeadRoute::NewBinding => self.new_binding.forward(hidden),
-            HeadRoute::FreeToken => self.free_token.forward(hidden),
+    pub fn forward(&self, head: OutputHead, hidden: &Tensor) -> Result<Tensor> {
+        match head {
+            OutputHead::Root => self.root.forward(hidden),
+            OutputHead::ItemList => self.item_list.forward(hidden),
+            OutputHead::DeclarationKind => self.declaration_kind.forward(hidden),
+            OutputHead::ParameterList => self.parameter_list.forward(hidden),
+            OutputHead::Type => self.ty.forward(hidden),
+            OutputHead::Block => self.block.forward(hidden),
+            OutputHead::TypeAnnotation => self.type_annotation.forward(hidden),
+            OutputHead::Expression => self.expression.forward(hidden),
+            OutputHead::LiteralKind => self.literal_kind.forward(hidden),
+            OutputHead::BinaryOperator => self.binary_operator.forward(hidden),
+            OutputHead::CallArgument => self.call_argument.forward(hidden),
+            OutputHead::IfElse => self.if_else.forward(hidden),
+            OutputHead::SymbolPointer | OutputHead::DirectCallTarget => {
+                candle_core::bail!("dynamic pointer heads must use symbol_pointer_scores")
+            }
         }
+    }
+}
+
+fn fixed_head(d_model: usize, head: OutputHead, vb: VarBuilder<'_>) -> Result<Linear> {
+    let candidates = head.fixed_candidate_count().ok_or_else(|| {
+        candle_core::Error::Msg("dynamic pointer head has no fixed projection".into())
+    })?;
+    linear(d_model, candidates, vb)
+}
+
+/// Pretrained English/free-token projection, separate from structural routing.
+pub struct FreeTokenHead {
+    projection: Linear,
+}
+
+impl FreeTokenHead {
+    pub fn new(d_model: usize, vocabulary_size: usize, vb: VarBuilder<'_>) -> Result<Self> {
+        if d_model == 0 || vocabulary_size == 0 {
+            candle_core::bail!("free-token head dimensions must be greater than zero")
+        }
+        Ok(Self {
+            projection: linear(
+                d_model,
+                vocabulary_size,
+                vb.pp(PRETRAINED_PARAMETER_PREFIX).pp("free_token_head"),
+            )?,
+        })
+    }
+
+    pub fn forward(&self, hidden: &Tensor) -> Result<Tensor> {
+        self.projection.forward(hidden)
     }
 }
 
@@ -308,9 +334,10 @@ pub fn symbol_pointer_scores(query: &Tensor, keys: &Tensor, legal: &Tensor) -> R
 }
 
 /// Stable high-level groups; this is metadata, not optimizer freezing.
-pub fn parameter_groups() -> [(&'static str, &'static str); 2] {
+pub fn parameter_groups() -> [(&'static str, &'static str); 3] {
     [
         ("backbone", BACKBONE_PARAMETER_PREFIX),
+        ("pretrained", PRETRAINED_PARAMETER_PREFIX),
         ("new_structural", STRUCTURAL_PARAMETER_PREFIX),
     ]
 }

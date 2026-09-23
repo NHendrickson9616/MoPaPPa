@@ -60,37 +60,40 @@ fn output_shapes_and_no_future_leakage() -> Result<()> {
 }
 
 #[test]
-fn routed_heads_have_distinct_shapes() -> Result<()> {
+fn routed_heads_match_every_fixed_training_head() -> Result<()> {
     let device = Device::Cpu;
     let vars = VarMap::new();
-    let sizes = RoutedHeadConfig {
-        item: 3,
-        expression: 4,
-        ty: 5,
-        binary_operator: 6,
-        list_continue: 2,
-        new_binding: 1,
-        free_token: 11,
-    };
-    let heads = RoutedHeads::new(
-        8,
-        &sizes,
-        VarBuilder::from_varmap(&vars, DType::F32, &device),
-    )?;
+    let heads = RoutedHeads::new(8, VarBuilder::from_varmap(&vars, DType::F32, &device))?;
     let hidden = Tensor::zeros((2, 8), DType::F32, &device)?;
-    assert_eq!(heads.forward(HeadRoute::Item, &hidden)?.dims(), &[2, 3]);
-    assert_eq!(
-        heads.forward(HeadRoute::ListContinue, &hidden)?.dims(),
-        &[2, 2]
+    for head in [
+        OutputHead::Root,
+        OutputHead::ItemList,
+        OutputHead::DeclarationKind,
+        OutputHead::ParameterList,
+        OutputHead::Type,
+        OutputHead::Block,
+        OutputHead::TypeAnnotation,
+        OutputHead::Expression,
+        OutputHead::LiteralKind,
+        OutputHead::BinaryOperator,
+        OutputHead::CallArgument,
+        OutputHead::IfElse,
+    ] {
+        assert_eq!(
+            heads.forward(head, &hidden)?.dims(),
+            &[2, head.fixed_candidate_count().unwrap()]
+        );
+    }
+    assert!(heads.forward(OutputHead::SymbolPointer, &hidden).is_err());
+    assert!(
+        heads
+            .forward(OutputHead::DirectCallTarget, &hidden)
+            .is_err()
     );
-    assert_eq!(
-        heads.forward(HeadRoute::FreeToken, &hidden)?.dims(),
-        &[2, 11]
-    );
-    assert_ne!(
-        heads.forward(HeadRoute::Expression, &hidden)?.dim(1)?,
-        sizes.free_token
-    );
+
+    let free_token =
+        FreeTokenHead::new(8, 11, VarBuilder::from_varmap(&vars, DType::F32, &device))?;
+    assert_eq!(free_token.forward(&hidden)?.dims(), &[2, 11]);
     Ok(())
 }
 
@@ -98,30 +101,10 @@ fn routed_heads_have_distinct_shapes() -> Result<()> {
 fn routed_heads_reject_empty_dimensions() {
     let device = Device::Cpu;
     let vars = VarMap::new();
-    let valid = RoutedHeadConfig {
-        item: 3,
-        expression: 4,
-        ty: 5,
-        binary_operator: 6,
-        list_continue: 2,
-        new_binding: 1,
-        free_token: 11,
-    };
     let builder = || VarBuilder::from_varmap(&vars, DType::F32, &device);
-    assert!(RoutedHeads::new(0, &valid, builder()).is_err());
-    for empty_route in 0..7 {
-        let mut sizes = valid.clone();
-        match empty_route {
-            0 => sizes.item = 0,
-            1 => sizes.expression = 0,
-            2 => sizes.ty = 0,
-            3 => sizes.binary_operator = 0,
-            4 => sizes.list_continue = 0,
-            5 => sizes.new_binding = 0,
-            _ => sizes.free_token = 0,
-        }
-        assert!(RoutedHeads::new(8, &sizes, builder()).is_err());
-    }
+    assert!(RoutedHeads::new(0, builder()).is_err());
+    assert!(FreeTokenHead::new(0, 11, builder()).is_err());
+    assert!(FreeTokenHead::new(8, 0, builder()).is_err());
 }
 
 #[test]
@@ -168,7 +151,11 @@ fn pointer_scores_dynamic_symbols_and_mask() -> Result<()> {
 fn parameter_group_contract_is_stable() {
     assert_eq!(
         parameter_groups(),
-        [("backbone", "backbone"), ("new_structural", "structural")]
+        [
+            ("backbone", "backbone"),
+            ("pretrained", "pretrained"),
+            ("new_structural", "structural")
+        ]
     );
 }
 
@@ -177,20 +164,9 @@ fn actual_parameter_names_belong_to_exactly_one_group() -> Result<()> {
     let device = Device::Cpu;
     let vars = VarMap::new();
     let _decoder = decoder(&vars, &device);
-    let sizes = RoutedHeadConfig {
-        item: 3,
-        expression: 4,
-        ty: 5,
-        binary_operator: 6,
-        list_continue: 2,
-        new_binding: 1,
-        free_token: 11,
-    };
-    let _heads = RoutedHeads::new(
-        8,
-        &sizes,
-        VarBuilder::from_varmap(&vars, DType::F32, &device),
-    )?;
+    let _heads = RoutedHeads::new(8, VarBuilder::from_varmap(&vars, DType::F32, &device))?;
+    let _free_token =
+        FreeTokenHead::new(8, 11, VarBuilder::from_varmap(&vars, DType::F32, &device))?;
 
     // VarMap does not expose names in Candle 0.11, so inspect its serialized
     // safetensors header (without adding a serialization dependency).
@@ -206,7 +182,11 @@ fn actual_parameter_names_belong_to_exactly_one_group() -> Result<()> {
     let header = std::str::from_utf8(&bytes[8..8 + header_len]).unwrap();
     let names: Vec<&str> = header
         .split('"')
-        .filter(|part| part.starts_with("backbone.") || part.starts_with("structural."))
+        .filter(|part| {
+            part.starts_with("backbone.")
+                || part.starts_with("pretrained.")
+                || part.starts_with("structural.")
+        })
         .collect();
     assert_eq!(names.len(), vars.all_vars().len());
     for name in names {

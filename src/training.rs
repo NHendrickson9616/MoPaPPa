@@ -35,6 +35,29 @@ pub enum OutputHead {
     IfElse,
 }
 
+impl OutputHead {
+    /// Number of logits for fixed categorical heads.
+    ///
+    /// Dynamic pointer heads are sized by the controller's visible candidates.
+    pub const fn fixed_candidate_count(self) -> Option<usize> {
+        match self {
+            Self::Root => Some(2),
+            Self::ItemList => Some(2),
+            Self::DeclarationKind => Some(DeclarationKind::CANDIDATE_COUNT as usize),
+            Self::ParameterList => Some(2),
+            Self::Type => Some(11),
+            Self::Block => Some(4),
+            Self::TypeAnnotation => Some(2),
+            Self::Expression => Some(5),
+            Self::LiteralKind => Some(LiteralKind::CANDIDATE_COUNT as usize),
+            Self::BinaryOperator => Some(12),
+            Self::SymbolPointer | Self::DirectCallTarget => None,
+            Self::CallArgument => Some(2),
+            Self::IfElse => Some(2),
+        }
+    }
+}
+
 /// Fixed-vocabulary choice. IDs are local to each head, contiguous from zero,
 /// and defined by `candidate_id`, never by Rust discriminants.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -710,6 +733,11 @@ mod tests {
         let literals = [LiteralKind::Integer, LiteralKind::String, LiteralKind::Bool];
         assert_eq!(LiteralKind::CANDIDATE_COUNT, literals.len() as u16);
         assert_eq!(literals.map(LiteralKind::candidate_id), [0, 1, 2]);
+        assert_eq!(OutputHead::Root.fixed_candidate_count(), Some(2));
+        assert_eq!(OutputHead::DeclarationKind.fixed_candidate_count(), Some(3));
+        assert_eq!(OutputHead::LiteralKind.fixed_candidate_count(), Some(3));
+        assert_eq!(OutputHead::SymbolPointer.fixed_candidate_count(), None);
+        assert_eq!(OutputHead::DirectCallTarget.fixed_candidate_count(), None);
     }
 
     #[test]

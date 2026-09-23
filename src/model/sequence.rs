@@ -1,6 +1,6 @@
 //! Backend-independent causal sequencing; intentionally not exported yet.
-//! `OutputHead` is the routing authority. Decoder `HeadRoute` alignment is a
-//! separate integration invariant and must not be approximated here.
+//! `OutputHead` is the shared routing authority for sequencing and decoder
+//! structural projections.
 
 use crate::controller::{Action, DeclarationAction, LiteralAction, Need};
 use crate::training::{
