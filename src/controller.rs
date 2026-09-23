@@ -298,9 +298,16 @@ impl Tracer {
                 for item in items {
                     let Item::Function(function) = item;
                     self.push(Need::ItemOrEnd, Action::ItemList(ItemListAction::Function));
-                    self.function(function)?;
+                    self.push(
+                        Need::Declaration,
+                        Action::Declaration(DeclarationAction::Function(function.name)),
+                    );
                 }
                 self.push(Need::ItemOrEnd, Action::ItemList(ItemListAction::End));
+                for item in items {
+                    let Item::Function(function) = item;
+                    self.function_body(function)?;
+                }
             }
             Root::BlockFragment(block) => {
                 self.push(Need::Root, Action::Root(RootAction::BlockFragment));
@@ -310,11 +317,7 @@ impl Tracer {
         Ok(())
     }
 
-    fn function(&mut self, function: &crate::model::ir::Function) -> Result<(), TraceError> {
-        self.push(
-            Need::Declaration,
-            Action::Declaration(DeclarationAction::Function(function.name)),
-        );
+    fn function_body(&mut self, function: &crate::model::ir::Function) -> Result<(), TraceError> {
         self.scopes.push(BTreeMap::new());
         for parameter in &function.parameters {
             self.push(
@@ -588,6 +591,7 @@ mod tests {
                     Need::Declaration,
                     Action::Declaration(DeclarationAction::Function(SymbolId(1)))
                 ),
+                step(Need::ItemOrEnd, Action::ItemList(ItemListAction::End)),
                 step(
                     Need::ParameterOrEnd,
                     Action::ParameterList(ParameterListAction::Parameter)
@@ -638,8 +642,72 @@ mod tests {
                     Need::Literal,
                     Action::Literal(super::LiteralAction::Integer(1))
                 ),
+            ]
+        );
+    }
+
+    #[test]
+    fn traces_all_function_headers_before_bodies() {
+        let root = Root::Module {
+            items: vec![
+                Item::Function(Function {
+                    name: SymbolId(1),
+                    parameters: vec![],
+                    return_type: PrimitiveType::Unit,
+                    body: Block {
+                        statements: vec![],
+                        tail: Some(Box::new(Expression::Symbol(SymbolId(2)))),
+                    },
+                }),
+                Item::Function(Function {
+                    name: SymbolId(2),
+                    parameters: vec![],
+                    return_type: PrimitiveType::Unit,
+                    body: Block::default(),
+                }),
+            ],
+        };
+
+        let steps = trace(&root).expect("forward function reference is valid");
+        assert_eq!(
+            &steps[..6],
+            &[
+                step(Need::Root, Action::Root(RootAction::Module)),
+                step(Need::ItemOrEnd, Action::ItemList(ItemListAction::Function)),
+                step(
+                    Need::Declaration,
+                    Action::Declaration(DeclarationAction::Function(SymbolId(1)))
+                ),
+                step(Need::ItemOrEnd, Action::ItemList(ItemListAction::Function)),
+                step(
+                    Need::Declaration,
+                    Action::Declaration(DeclarationAction::Function(SymbolId(2)))
+                ),
                 step(Need::ItemOrEnd, Action::ItemList(ItemListAction::End)),
             ]
+        );
+        assert_eq!(
+            steps[6],
+            step(
+                Need::ParameterOrEnd,
+                Action::ParameterList(ParameterListAction::End)
+            )
+        );
+        assert_eq!(
+            steps[10],
+            step(
+                Need::SymbolReference,
+                Action::SymbolReference(SymbolReferenceAction {
+                    symbol: SymbolId(2)
+                })
+            )
+        );
+        assert_eq!(
+            steps[11],
+            step(
+                Need::ParameterOrEnd,
+                Action::ParameterList(ParameterListAction::End)
+            )
         );
     }
 

@@ -15,7 +15,7 @@ use crate::model::ir::{BinaryOperator, PrimitiveType, SymbolId};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SchemaVersion(pub u16);
-pub const TRAINING_SCHEMA_VERSION: SchemaVersion = SchemaVersion(2);
+pub const TRAINING_SCHEMA_VERSION: SchemaVersion = SchemaVersion(3);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum OutputHead {
@@ -528,14 +528,14 @@ mod tests {
             .unwrap()
             .into_iter()
             .enumerate()
-            .map(|(index, step)| observed(step, (index == 12).then(|| vec![SymbolId(2)])))
+            .map(|(index, step)| observed(step, (index == 13).then(|| vec![SymbolId(2)])))
             .collect();
         let sequence = sequence_from_observed_trace(observed).unwrap();
 
         assert_eq!(sequence.records.len(), 16);
-        assert_eq!(sequence.records[12].target, Target::SymbolPointerSlot(0));
+        assert_eq!(sequence.records[13].target, Target::SymbolPointerSlot(0));
         assert_eq!(
-            sequence.records[14].annotation,
+            sequence.records[15].annotation,
             Annotation::RawLiteral(LiteralAction::Integer(1))
         );
     }
