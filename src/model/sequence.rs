@@ -108,7 +108,8 @@ impl StructuralPosition {
         &self.observation
     }
 
-    pub(crate) fn from_model_step(
+    /// Builds the structural input for the current controller request.
+    pub fn from_model_step(
         step: &ModelStep,
         previous_action: PreviousAction,
         completed_actions: usize,
@@ -323,7 +324,8 @@ impl CausalSequence {
     /// Unlike teacher-forcing construction, structural positions deliberately
     /// carry no target. `history` contains the exact inputs previously scored
     /// alongside the actions that were accepted from them.
-    pub(crate) fn from_inference(
+    /// Builds the causal stream used for one inference request.
+    pub fn from_inference(
         prefix: &[TokenId],
         tokenizer: &TokenizerIdentity,
         history: &[(StructuralPosition, Action)],

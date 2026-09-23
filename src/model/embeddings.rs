@@ -55,12 +55,20 @@ pub struct InputEmbeddings {
     config: EmbeddingConfig,
     token: Embedding,
     position: Embedding,
+    structural: StructuralEmbeddings,
+}
+
+/// Learned features shared by every structural position composer.
+///
+/// Token and absolute-position embeddings deliberately do not belong here.
+pub(crate) struct StructuralEmbeddings {
     modality: Embedding,
     output_head: Embedding,
     previous_action: Embedding,
     state: Linear,
     payload: Linear,
     dtype: DType,
+    d_model: usize,
 }
 
 impl InputEmbeddings {
@@ -75,28 +83,7 @@ impl InputEmbeddings {
                 config.d_model,
                 pretrained.pp("position"),
             )?,
-            modality: embedding(
-                MODALITY_COUNT as usize,
-                config.d_model,
-                structural.pp("modality"),
-            )?,
-            output_head: embedding(
-                OUTPUT_HEAD_COUNT as usize,
-                config.d_model,
-                structural.pp("output_head"),
-            )?,
-            previous_action: embedding(
-                PREVIOUS_ACTION_COUNT as usize,
-                config.d_model,
-                structural.pp("previous_action"),
-            )?,
-            state: linear(STATE_FEATURE_COUNT, config.d_model, structural.pp("state"))?,
-            payload: linear(
-                PAYLOAD_FEATURE_COUNT,
-                config.d_model,
-                structural.pp("payload"),
-            )?,
-            dtype: vb.dtype(),
+            structural: StructuralEmbeddings::new(config.d_model, structural, vb.dtype())?,
             config,
         })
     }
@@ -125,12 +112,7 @@ impl InputEmbeddings {
         }
 
         let device = self.position.embeddings().device();
-        let english_modality = self
-            .modality
-            .forward(&Tensor::new(&[ENGLISH_MODALITY_ID], device)?)?;
-        let structural_modality = self
-            .modality
-            .forward(&Tensor::new(&[STRUCTURAL_MODALITY_ID], device)?)?;
+        let english_modality = self.structural.modality(ENGLISH_MODALITY_ID)?;
         let mut rows = Vec::with_capacity(length);
         for (index, item) in sequence.positions().iter().enumerate() {
             let position = self
@@ -148,28 +130,7 @@ impl InputEmbeddings {
                         .broadcast_add(&english_modality)?
                 }
                 Position::Structural(input) => {
-                    let head = self.output_head.forward(&Tensor::new(
-                        &[output_head_id(input.output_head())],
-                        device,
-                    )?)?;
-                    let previous = self.previous_action.forward(&Tensor::new(
-                        &[previous_action_id(input.previous_action())],
-                        device,
-                    )?)?;
-                    let state = input.state();
-                    let state_features =
-                        Tensor::new(&normalized_state(state, self.config.max_seq_len), device)?
-                            .to_dtype(self.dtype)?
-                            .reshape((1, STATE_FEATURE_COUNT))?;
-                    let state = self.state.forward(&state_features)?;
-                    let payload_features = payload_features(input.previous_action());
-                    let payload = self.payload.forward(
-                        &Tensor::new(&payload_features, device)?
-                            .to_dtype(self.dtype)?
-                            .reshape((1, PAYLOAD_FEATURE_COUNT))?,
-                    )?;
-                    (((((&position + &structural_modality)? + &head)? + &previous)? + state)?
-                        + payload)?
+                    (&position + self.structural.forward(input, self.config.max_seq_len)?)?
                 }
                 Position::SymbolNameToken(_) | Position::FreeToken(_) => {
                     candle_core::bail!("reserved unsupported position at sequence position {index}")
@@ -178,6 +139,63 @@ impl InputEmbeddings {
             rows.push(row);
         }
         Tensor::cat(&rows, 0)?.unsqueeze(0)
+    }
+}
+
+impl StructuralEmbeddings {
+    pub(crate) fn new(d_model: usize, vb: VarBuilder<'_>, dtype: DType) -> Result<Self> {
+        Ok(Self {
+            modality: embedding(MODALITY_COUNT as usize, d_model, vb.pp("modality"))?,
+            output_head: embedding(OUTPUT_HEAD_COUNT as usize, d_model, vb.pp("output_head"))?,
+            previous_action: embedding(
+                PREVIOUS_ACTION_COUNT as usize,
+                d_model,
+                vb.pp("previous_action"),
+            )?,
+            state: linear(STATE_FEATURE_COUNT, d_model, vb.pp("state"))?,
+            payload: linear(PAYLOAD_FEATURE_COUNT, d_model, vb.pp("payload"))?,
+            dtype,
+            d_model,
+        })
+    }
+
+    fn modality(&self, id: u32) -> Result<Tensor> {
+        self.modality
+            .forward(&Tensor::new(&[id], self.modality.embeddings().device())?)
+    }
+
+    pub(crate) fn device(&self) -> &candle_core::Device {
+        self.modality.embeddings().device()
+    }
+
+    /// Composes one structural position as `[1, D]`.
+    pub(crate) fn forward(
+        &self,
+        input: &super::sequence::StructuralPosition,
+        max_seq_len: usize,
+    ) -> Result<Tensor> {
+        let device = self.modality.embeddings().device();
+        let modality = self.modality(STRUCTURAL_MODALITY_ID)?;
+        let head = self.output_head.forward(&Tensor::new(
+            &[output_head_id(input.output_head())],
+            device,
+        )?)?;
+        let previous = self.previous_action.forward(&Tensor::new(
+            &[previous_action_id(input.previous_action())],
+            device,
+        )?)?;
+        let state_features = Tensor::new(&normalized_state(input.state(), max_seq_len), device)?
+            .to_dtype(self.dtype)?
+            .reshape((1, STATE_FEATURE_COUNT))?;
+        let state = self.state.forward(&state_features)?;
+        let payload = self.payload.forward(
+            &Tensor::new(&payload_features(input.previous_action()), device)?
+                .to_dtype(self.dtype)?
+                .reshape((1, PAYLOAD_FEATURE_COUNT))?,
+        )?;
+        let row = ((((&modality + &head)? + &previous)? + state)? + payload)?;
+        debug_assert_eq!(row.dims(), &[1, self.d_model]);
+        Ok(row)
     }
 }
 

@@ -164,25 +164,33 @@ impl StructuralModel {
         hidden: &Tensor,
         step: &ModelStep,
     ) -> Result<Tensor> {
-        let (head, candidates) = fixed_request(step)?;
-        let candidate_count = head
-            .fixed_candidate_count()
-            .expect("fixed output head has a fixed vocabulary");
-        let mut legal = vec![0u8; candidate_count];
-        for candidate in candidates {
-            let id = usize::from(candidate.id);
-            if id >= candidate_count {
-                candle_core::bail!("fixed candidate ID {} is out of range", candidate.id)
-            }
-            if legal[id] != 0 {
-                candle_core::bail!("duplicate fixed candidate ID {}", candidate.id)
-            }
-            legal[id] = 1;
-        }
-        let logits = self.heads.forward(head, hidden)?;
-        let legal = Tensor::from_vec(legal, (1, candidate_count), logits.device())?;
-        apply_legal_mask(&logits, &legal)
+        fixed_logits_from_hidden(&self.heads, hidden, step)
     }
+}
+
+pub(crate) fn fixed_logits_from_hidden(
+    heads: &RoutedHeads,
+    hidden: &Tensor,
+    step: &ModelStep,
+) -> Result<Tensor> {
+    let (head, candidates) = fixed_request(step)?;
+    let candidate_count = head
+        .fixed_candidate_count()
+        .expect("fixed output head has a fixed vocabulary");
+    let mut legal = vec![0u8; candidate_count];
+    for candidate in candidates {
+        let id = usize::from(candidate.id);
+        if id >= candidate_count {
+            candle_core::bail!("fixed candidate ID {} is out of range", candidate.id)
+        }
+        if legal[id] != 0 {
+            candle_core::bail!("duplicate fixed candidate ID {}", candidate.id)
+        }
+        legal[id] = 1;
+    }
+    let logits = heads.forward(head, hidden)?;
+    let legal = Tensor::from_vec(legal, (1, candidate_count), logits.device())?;
+    apply_legal_mask(&logits, &legal)
 }
 
 fn fixed_request(

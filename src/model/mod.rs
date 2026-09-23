@@ -8,6 +8,7 @@ pub mod embeddings;
 pub mod experiment;
 pub mod ir;
 pub mod pretrained_llama;
+pub mod pretrained_structural;
 pub mod runner;
 pub mod sequence;
 pub mod structural;
