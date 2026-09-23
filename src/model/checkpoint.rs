@@ -445,10 +445,12 @@ fn mm(field: &'static str, expected: impl fmt::Debug, found: impl fmt::Debug) ->
 pub enum ParameterDestination {
     Backbone,
     TokenEmbedding,
+    PositionEmbedding,
     FreeTokenOutput(FreeTokenOutput),
-    ActionEmbedding,
-    NeedEmbedding,
-    StateEmbedding,
+    PreviousActionEmbedding,
+    OutputHeadEmbedding,
+    StateProjection,
+    PayloadProjection,
     ModalityEmbedding,
     StructuralHead,
     PointerHead,
@@ -466,9 +468,10 @@ pub enum TensorOwnership {
 impl ParameterDestination {
     pub const fn ownership(self) -> TensorOwnership {
         match self {
-            Self::Backbone | Self::TokenEmbedding | Self::FreeTokenOutput(_) => {
-                TensorOwnership::Checkpoint
-            }
+            Self::Backbone
+            | Self::TokenEmbedding
+            | Self::PositionEmbedding
+            | Self::FreeTokenOutput(_) => TensorOwnership::Checkpoint,
             _ => TensorOwnership::NewlyInitialized,
         }
     }
@@ -679,10 +682,19 @@ mod tests {
                 .ownership(),
             TensorOwnership::Checkpoint
         );
+        for destination in [
+            ParameterDestination::Backbone,
+            ParameterDestination::TokenEmbedding,
+            ParameterDestination::PositionEmbedding,
+            ParameterDestination::FreeTokenOutput(FreeTokenOutput::UntiedTensor),
+        ] {
+            assert_eq!(destination.ownership(), TensorOwnership::Checkpoint);
+        }
         for d in [
-            ParameterDestination::ActionEmbedding,
-            ParameterDestination::NeedEmbedding,
-            ParameterDestination::StateEmbedding,
+            ParameterDestination::PreviousActionEmbedding,
+            ParameterDestination::OutputHeadEmbedding,
+            ParameterDestination::StateProjection,
+            ParameterDestination::PayloadProjection,
             ParameterDestination::ModalityEmbedding,
             ParameterDestination::StructuralHead,
             ParameterDestination::PointerHead,
